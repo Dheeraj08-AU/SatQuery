@@ -1,0 +1,10 @@
+streamlit
+python-dotenv
+google-genai
+pydantic
+Pillow
+numpy
+rasterio
+torch
+transformers
+peft

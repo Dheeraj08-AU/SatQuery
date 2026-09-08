@@ -1,0 +1,26 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model weights and archives (large files)
+*.bin
+*.safetensors
+*.zip
+
+# VQA cache (contains inference results, regenerate with prewarm_cache.py)
+vqa_cache.json
+
