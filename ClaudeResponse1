@@ -103,3 +103,46 @@ If the builds fail their quality gates, that is the script working correctly. Th
 Next
 
 The inference layer: model_registry.py routed through raster_io and composite, the run_optical_sar signature crash, the fabricated tool names and unused parameters in the execution trace, geo_validator's 1e-4 tolerance and PNG bypass, real change detection replacing the pixel diff, the offline fallback router, and the benchmark eval harness. I'll start on those now unless you want a different order — none of it blocks the training you can kick off immediately.
+Zip built — but Compress-Archive in Windows PowerShell 5.1 writes backslash path separators, which violates the ZIP spec and breaks unzip on Linux (you'd get files literally named modules\composite.py in Colab). Rebuilding with proper forward slashes:
+
+Ran 2 commands (1 failed)
+Sent
+
+SatQuery AI update pack — 8 code files + APPLY.md + quarantine script. Extract over the root of SatQuery-main.
+
+ZIP
+
+SatQuery_update_2026-09-08.zip
+
+38.5KB
+
+C:\Users\ADMIN\Desktop\SatQuery_update_2026-09-08.zip (38 KB) — also attached above.
+
+Contents, laid out to mirror the repo so it extracts straight over SatQuery-main/:
+
+APPLY.md                        step-by-step, plus expected failure modes
+quarantine_broken.ps1           run once, from the repo root
+data_prep.py                    replaced
+requirements.txt                replaced
+requirements-train.txt          new
+modules/raster_io.py            new
+modules/composite.py            new
+training/prep_cdvqa.py          replaced
+training/train_vlm.py           new
+training/_deprecated/README.md  new
+
+Two things worth knowing before you extract:
+
+Back up first. data_prep.py, training/prep_cdvqa.py and requirements.txt get overwritten. Nothing else in the repo is touched — app.py, agent_controller.py, model_registry.py and geo_validator.py are untouched and still carry the bugs from the audit.
+
+Run the quarantine script separately. A zip can add files but can't move or delete them, so the broken scripts and degenerate datasets are still sitting in your repo on the other device. From the repo root:
+
+powershell -ExecutionPolicy Bypass -File .\quarantine_broken.ps1
+
+It moves finetune_vlm.py, finetune_change_vlm.py, cdvqa_formatted/ and vrsbench_train.json into training/_deprecated/. It skips anything missing, never overwrites, and deletes nothing. If your adapter weights are present it also reminds you to push them to a private HF repo before retraining — right now they exist on one machine and are gitignored, so the current state isn't recoverable if the new run goes worse.
+
+I rebuilt the archive with POSIX path separators rather than what Compress-Archive produces, so it will also unzip correctly in Colab, not just on Windows.
+
+Still true and worth repeating: none of this has been executed. Run the two --inspect commands first — they're the cheapest way to catch a schema mismatch before you burn Colab hours on it.
+
+I'll start on the inference layer now: the run_optical_sar signature crash, routing all pixel reads through raster_io, stripping the fabricated model names and unused parameters out of the execution trace, the co-registration tolerance, real change detection, the offline fallback router, and the benchmark eval harness.
