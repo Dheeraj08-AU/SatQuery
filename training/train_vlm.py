@@ -421,7 +421,7 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--warmup-ratio", type=float, default=0.03)
-    ap.add_argument("--max-length", type=int, default=320)
+    ap.add_argument("--max-length", type=int, default=512)
     ap.add_argument("--max-answer-words", type=int, default=120)
     ap.add_argument("--include-vision", action="store_true", default=True,
                     help="Attach LoRA to the SigLIP vision tower too (recommended: "
