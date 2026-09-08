@@ -146,3 +146,10 @@ I rebuilt the archive with POSIX path separators rather than what Compress-Archi
 Still true and worth repeating: none of this has been executed. Run the two --inspect commands first — they're the cheapest way to catch a schema mismatch before you burn Colab hours on it.
 
 I'll start on the inference layer now: the run_optical_sar signature crash, routing all pixel reads through raster_io, stripping the fabricated model names and unused parameters out of the execution trace, the co-registration tolerance, real change detection, the offline fallback router, and the benchmark eval harness.
+
+
+Please proceed with exactly what you outlined for the inference layer next! Specifically, please rewrite and provide the fixes for: 1. Routing model_registry.py through the new raster_io and composite modules. 2. Fixing the run_optical_sar signature crash. 3. Fixing the fabricated tool names and unused parameters in the agent's execution trace (fixing agent_controller.py). 4. Fixing geo_validator.py's 1e-4 tolerance and PNG bypass. 5. Implementing the real change detection logic to replace the pixel diff. 6. The offline fallback router and benchmark eval harness.
+
+I have successfully applied your update pack and quarantined the old files. Please write the code for these inference fixes next."
+
+This will get Claude to rewrite model_registry.py, agent_controller.py, and geo_validator.py properly so that the app actually works with the new pipeline!
