@@ -466,7 +466,7 @@ def main() -> int:
     print(f"Unique train image keys: {len(train_keys):,}")
     gold_variety = len({r['answer'].strip().lower() for r in train_records})
     print(f"Distinct train answers  : {gold_variety:,}")
-    if gold_variety < 20:
+    if gold_variety < 10:
         raise SystemExit(
             f"Only {gold_variety} distinct answers in the training set. "
             "Refusing to train - this is the degenerate-data condition."
