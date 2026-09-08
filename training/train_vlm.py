@@ -361,7 +361,8 @@ def evaluate(
         if "pixel_values" in inputs:
             inputs["pixel_values"] = inputs["pixel_values"].to(torch.float16)
 
-        out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        with torch.autocast("cuda", dtype=torch.float16):
+            out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
         prompt_len = inputs["input_ids"].shape[1]
         pred = processor.decode(out[0][prompt_len:], skip_special_tokens=True).strip()
         preds.append(pred)
