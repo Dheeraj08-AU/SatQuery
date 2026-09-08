@@ -235,3 +235,33 @@ trainer.train()
 model.save_pretrained("./satquery_vqa_adapter")
 processor.save_pretrained("./satquery_vqa_adapter")
 5:20 PM
+
+Short answer: it's enough to reason about architecture and strategy, but not enough to fix or extend code. And this machine doesn't have the project — the folder here has a SIH26117 directory (different PS) and a pile of paper-writing scripts, nothing SatQuery.
+
+What the handover gives me
+
+Enough to judge the design and spot problems. I can already see concrete bugs in what you pasted:
+
+model_registry.py:run_single_vqa is broken as written:
+
+cache_key = hashlib.md5((open(image_path,"rb").read() + query.encode()).hexdigest())
+
+.hexdigest() is being called on the bytes object, not on the md5 object → AttributeError on every call. Should be hashlib.md5(...).hexdigest(). Also the cache is read but never written back to disk.
+
+run_grounding is pass → returns None → app.py renders an empty answer for the grounding path. That's one of your two mandatory single-image tasks.
+
+confidence: 0.95 is hardcoded everywhere. The PS explicitly asks for confidence estimation as an evaluated output. Judges will diff three tasks all returning 0.95 and notice. You have the logits — compute it from output_scores / compute_transition_scores.
+
+The GeoTIFF path is the biggest risk. You're doing Image.open(path).convert("RGB") everywhere. That silently fails or garbles on a 12-band Sentinel-2 GeoTIFF and on RISAT SAR (float32/uint16, single band, huge dynamic range). The ISRO/SAC eval set is pre-georeferenced Cartosat-2S + RISAT GeoTIFF pairs. You need a rasterio loader with band selection + percentile stretch before PIL ever sees the data, otherwise you score near-zero on the set that matters most.
+
+Gemini API as the agentic router is a live-internet dependency in the one component the PS says is mandatory. If the eval is offline or rate-limited, your whole system returns nothing. You need a deterministic local fallback router.
+
+What I'd need files for
+
+Anything where I have to match your actual code: modules/agent_controller.py and modules/geo_validator.py (never pasted — I can't see how routing or co-registration actually works), the adapter configs, your dataset prep script, requirements.txt, and whether a benchmark eval harness exists at all (VRSBench/RSVQA/CDVQA test splits — final scoring uses those, and I saw no scoring script).
+
+Suggestion
+
+Bring the repo to this machine (zip it, or push to a private GitHub repo and clone here). Then I can actually edit and run things instead of handing you patches to copy across devices.
+
+Want me to start now on the two things I can do from text alone — a hardened rasterio-based image loader for GeoTIFF/SAR, and real confidence extraction from generation scores — so they're ready to drop in when you get the files over?
