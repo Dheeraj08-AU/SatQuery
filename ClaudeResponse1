@@ -1,0 +1,105 @@
+Colab free T4 noted — that's compute capability 7.5, so bf16 is unsupported; your existing training scripts set bnb_4bit_compute_dtype=torch.bfloat16 alongside fp16=True, which is a mismatch I'll correct.
+
+I can't execute anything on this machine (no Python), so every file I write is reviewed-by-eye, not run. I'll say explicitly which parts carry residual risk, and I've built hard assertions into the data pipeline so failures are loud instead of silent — that's what produced the fabricated dataset in the first place.
+
+Sequencing by dependency: retraining is the long pole (hours of GPU wall-clock), and it's gated on the data pipeline. So this turn is the foundation — raster I/O + both dataset builders — so you can start prep immediately. Inference/controller/app/eval follow next.
+
+Created 3 files
++1928
+-160
+Created
+raster_io.py
++721
+-0
+Updated
+data_prep.py
++686
+-50
+Updated
+prep_cdvqa.py
++521
+-110
+
+Foundation is in. Now the shared prompt/composite module — this must be imported by both training and inference, because a mismatch between how composites are built at train time versus serve time is a silent accuracy killer.
+
+Created 5 files, edited a file, ran a command
++872
+-29
+Created
+composite.py
++157
+-0
+Created
+train_vlm.py
++590
+-0
+Edited
+train_vlm.py
++23
+-19
+Updated
+requirements.txt
++31
+-10
+Created
+requirements-train.txt
++10
+-0
+Quarantine the broken training scripts and degenerate datasets
+Created
+README.md
++61
+-0
+
+Now a correctness pass over what I just wrote. Three real defects I can see by inspection:
+
+Edited 3 files, ran 2 commands
++107
+-15
+
+No Python on this machine — confirmed, I searched every standard install location. So nothing below has been syntax-checked or run. I've reviewed it by eye and fixed three defects I found in my own code during that pass (complex-SAR amplitude being silently discarded by a float cast; RGBA PNGs having red and blue swapped by the 4-band layout table; and --no-include-vision not actually excluding the vision tower, because PEFT matches bare suffixes globally — the same trap the original config fell into).
+
+What's now in place
+
+modules/raster_io.py (new) — the layer that was entirely missing. Multispectral GeoTIFF band selection (colour-interpretation first, then Sentinel-2 band names, then a layout table), per-band percentile stretch, SAR handling (amplitude-vs-power dB conversion, Lee speckle filter via integral-image box means, no scipy dependency), nodata masking, and align_pair() which reprojects a co-registered pair onto a common grid instead of assuming identical bounds. Every read returns a RasterLoadReport recording exactly which bands, stretch values, and filters were applied — that feeds the audit trail, so the execution summary will report real preprocessing rather than invented parameters.
+
+modules/composite.py (new) — the shared composite and prompt builders, imported by both training and inference. Two-image composites now fit each scene into its own square cell and letterbox, instead of stretching each into a 112×224 slot at 2:1 distortion. Train/serve skew here would be invisible and fatal, so there is now exactly one definition of each prompt string and each canvas layout.
+
+data_prep.py (rewritten) — no or-fallback chains anywhere. Discovers real repo filenames via HfApi, auto-detects record schema, counts unparseable records and aborts above 5%, verifies every referenced image exists on disk, balances the answer distribution, and enforces hard floors on unique images / unique answers / max single-answer share. It explicitly checks for the old placeholder strings and refuses to build if they appear. Splits by image, and asserts zero overlap.
+
+training/prep_cdvqa.py (rewritten) — hf_hub_download instead of curl; every failure categorised and counted instead of except: pass; image pairs deduplicated by content hash so 200 files can't hold 6 pictures again; a cap on questions-per-pair; answer balancing; split by image pair; floor of 300 unique pairs (you had 6).
+
+training/train_vlm.py (new, replaces both old scripts) — one code path for both adapters. fp16 throughout for T4 sm_75. token_type_ids forwarded to the model. LoRA targets resolved to full module names and printed. And a post-training degeneracy check: it measures distinct-prediction ratio across the val set and prints a loud FAILED banner if the model collapsed to a constant answer — the check that would have caught this months ago.
+
+requirements.txt pinned with upper bounds, plus requirements-train.txt for Colab (bitsandbytes is Linux-only, so it can't sit in the base file if the app must install on Windows).
+
+training/_deprecated/ — the two broken scripts and both degenerate datasets moved here with a README documenting each defect, so nobody re-runs them by accident.
+
+Run these, in order
+
+Both --inspect commands take about a minute and resolve the one thing I could not verify from here: the true VRSBench record schema and the true CDVQA tar layout. Run them first.
+
+pip install -r requirements-train.txt && python data_prep.py --inspect
+python training/prep_cdvqa.py --inspect
+
+If those look sane, build:
+
+python data_prep.py --max-answer-fraction 0.30
+python training/prep_cdvqa.py --shards 24 --max-qa-per-pair 12
+
+Then train on Colab. --hub-repo is not optional — it's the only thing stopping your weights from living on one laptop again:
+
+python training/train_vlm.py --task vqa --data-dir data/vrsbench --out modules/satquery_vqa_adapter --max-steps 1200 --save-steps 100 --resume --hub-repo YOUR_HF_USER/satquery-vqa-adapter
+python training/train_vlm.py --task change --data-dir training/cdvqa --out modules/satquery_change_adapter --max-steps 800 --save-steps 100 --resume --hub-repo YOUR_HF_USER/satquery-change-adapter
+
+Rough T4 estimate: ~10–15 s per optimizer step at effective batch 16, so 1200 steps is 3–4 hours — longer than a free Colab session usually lasts. That's why --save-steps 100 --resume is there; a disconnect costs minutes, not the run.
+
+What I could not verify
+
+The two dataset schemas, as above. And every line here is untested — if a build aborts, paste the traceback and the --inspect output and I'll correct it against the real structure rather than guess again.
+
+If the builds fail their quality gates, that is the script working correctly. The gates are what the old pipeline lacked.
+
+Next
+
+The inference layer: model_registry.py routed through raster_io and composite, the run_optical_sar signature crash, the fabricated tool names and unused parameters in the execution trace, geo_validator's 1e-4 tolerance and PNG bypass, real change detection replacing the pixel diff, the offline fallback router, and the benchmark eval harness. I'll start on those now unless you want a different order — none of it blocks the training you can kick off immediately.
