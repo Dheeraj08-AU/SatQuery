@@ -1,0 +1,65 @@
+Good progress. Here's the honest map of what's left.
+
+Short answer
+
+Infrastructure is ~90% done. Model adaptation is ~40%. Evaluation is ~50% (harness exists, zero numbers produced). Deliverables and demo are ~20%.
+
+Call it 55–65% complete by effort — but the remaining portion contains the hardest technical risk in the project, and it isn't the change adapter.
+
+Before anything else: verify the VQA adapter
+
+train_vlm.py wrote modules/satquery_vqa_adapter/training_report.json. Open the eval block and check three numbers:
+
+python -c "import json;print(json.dumps(json.load(open('modules/satquery_vqa_adapter/training_report.json'))['eval'],indent=2))"
+collapsed must be false
+distinct_ratio should be well above 0.10
+exact_match must beat the majority-class baseline
+
+If collapsed is true, the adapter learned the answer prior and everything downstream is built on sand — that's exactly what killed the last attempt, and it's why that check exists. Paste that block to me before you go further.
+
+Remaining work
+A. Blocking
+Item	Status
+Change adapter training	in progress
+Verify VQA adapter isn't degenerate	do now
+Run pytest tests -q	never run — my code is entirely unexecuted
+End-to-end app run on the new pipeline	never done
+Push both adapters to HF Hub	deliverable requirement; weights still exist on one machine
+B. Required by the PS, genuinely missing
+Gap	Why it matters
+RSVQA is not used at all	The PS names "VRSBench and RSVQA" for evaluating single-image VQA. We build only VRSBench. Final scoring uses prescribed test splits — RSVQA-LR/HR needs a loader and an eval path.
+No real optical–SAR data has ever passed through the system	Detailed below. Biggest risk.
+BigEarthNet unused	The PS calls it "the primary dataset for remote-sensing adaptation." The "or any open source training data" clause is your out, but BigEarthNet-MM is the practical fix for the SAR gap.
+GroundingDINO still stock	Not disqualifying (the VQA adapter satisfies the adaptation clause), but the ISRO set includes reference bounding boxes, and a natural-image detector on nadir imagery will score badly.
+raster_io never tested on real GeoTIFF	Only synthetic rasters in the unit tests. Needs one real Sentinel-2 scene and one real SAR scene before you trust it.
+C. Score-improving
+Change-map IoU against reference masks (LEVIR-CD or SECOND) — the PS allows this and it's a scoreable output you currently produce but never measure
+Human-readable PDF/HTML report alongside the GeoJSON/JSON
+Inference latency: CPU is minutes per query, which is a demo killer
+D. Deliverables
+README with architecture diagram
+Demo dataset and a scripted walkthrough ("Codes and models including test and demonstration")
+The thing that actually worries me
+
+Your VQA adapter has never seen a SAR image. VRSBench is optical RGB aerial imagery. SAR is speckled, single-channel, decibel-scaled, with inverted semantics — water is dark, buildings are bright from double-bounce. That is far outside the adapter's training distribution.
+
+The ISRO/SAC evaluation set is "Cartosat-2S optical and RISAT SAR image pairs." Half of it is SAR. Right now your only real SAR capability is the deterministic sar_analysis.py percentile classifier — which is genuinely useful and physically motivated, but it isn't a vision-language model and can't answer arbitrary questions.
+
+The fix is a third adapter trained on BigEarthNet-MM, which ships real co-registered Sentinel-1 SAR + Sentinel-2 optical with text annotations. That single dataset closes the SAR gap, the cross-modal gap, and the "BigEarthNet is the primary dataset" gap at once. It's roughly one more data-prep script plus one more Colab run — reusing the pipeline you already have.
+
+Recommended order
+Verify the VQA adapter (now, 2 minutes)
+Finish the change adapter
+pytest tests -q and fix whatever breaks
+End-to-end app run; push both adapters to the Hub
+BigEarthNet-MM prep + third adapter ← the long pole
+RSVQA loader + eval
+Benchmark run, record real numbers
+GroundingDINO fine-tune on VRSBench referring boxes
+README, demo pack, report export
+
+Steps 1–4 are days. Step 5 is the real remaining chunk. Steps 6–9 are mostly mechanical once 1–5 land.
+
+What I need from you
+
+The eval block from training_report.json. If the VQA adapter is healthy, I'll write the BigEarthNet-MM prep script and the RSVQA loader next — those two are the whole of section B and they unblock everything else.
