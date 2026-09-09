@@ -50,6 +50,7 @@ from modules.geo_validator import CoregistrationStatus, SatQueryValidator
 
 from modules.model_registry import CONFIDENCE_TYPES
 from modules.raster_io import RasterReadError, load_as_rgb
+from modules.report import build_html_report
 
 st.set_page_config(
     page_title="SatQuery AI",
@@ -553,7 +554,7 @@ if trace := st.session_state.get("trace"):
                 st.json(r.evidence, expanded=False)
 
     st.subheader("Downloadable report")
-    dl1, dl2 = st.columns(2)
+    dl1, dl2, dl3 = st.columns(3)
 
     report_paths = st.session_state.get("trace_paths", [])
     geojson = build_geojson(trace, report_paths)
@@ -571,6 +572,14 @@ if trace := st.session_state.get("trace"):
         file_name="satquery_execution_report.json",
         mime="application/json",
         use_container_width=True,
+    )
+    dl3.download_button(
+        "Download readable report (HTML)",
+        data=build_html_report(trace, geojson),
+        file_name="satquery_report.html",
+        mime="text/html",
+        use_container_width=True,
+        help="Self-contained: images embedded, no external requests. Print to PDF from the browser.",
     )
 
     georeferenced = sum(

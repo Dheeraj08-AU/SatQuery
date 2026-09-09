@@ -35,10 +35,13 @@ from PIL import Image
 
 from modules.change_detection import detect_change
 from modules.composite import (
+    box_from_canvas,
     build_caption_prompt,
     build_change_prompt,
+    build_detect_prompt,
     build_fusion_prompt,
     build_vqa_prompt,
+    decode_loc_tokens,
     make_pair_composite,
     make_single_image,
 )
@@ -50,6 +53,8 @@ GROUNDING_ID = os.environ.get("SATQUERY_GROUNDING_MODEL", "IDEA-Research/groundi
 
 VQA_ADAPTER = os.environ.get("SATQUERY_VQA_ADAPTER", "modules/satquery_vqa_adapter")
 CHANGE_ADAPTER = os.environ.get("SATQUERY_CHANGE_ADAPTER", "modules/satquery_change_adapter")
+FUSION_ADAPTER = os.environ.get("SATQUERY_FUSION_ADAPTER", "modules/satquery_fusion_adapter")
+GROUNDING_ADAPTER = os.environ.get("SATQUERY_GROUNDING_ADAPTER", "modules/satquery_grounding_adapter")
 
 CACHE_FILE = os.environ.get("SATQUERY_CACHE_FILE", "vqa_cache.json")
 CACHE_DISABLED = os.environ.get("SATQUERY_DISABLE_CACHE", "").lower() in ("1", "true", "yes")
@@ -218,7 +223,33 @@ class ModelRegistry:
                     "Stock zero-shot detector, NOT fine-tuned on overhead imagery. "
                     "Trained on ground-level natural images, so nadir satellite "
                     "performance is materially weaker than its benchmark numbers. "
-                    "Fine-tuning on VRSBench referring expressions is the fix."
+                    "Used only as a fallback when the RS-adapted grounding adapter "
+                    "is unavailable."
+                ),
+            ),
+            "grounding_vlm": ToolDescriptor(
+                key="grounding_vlm",
+                display_name="Text-guided region grounding (PaliGemma detect + LoRA)",
+                model_id=f"{BASE_VLM_ID} + LoRA:{GROUNDING_ADAPTER}",
+                kind="vlm",
+                remote_sensing_adapted=True,
+                notes=(
+                    "PaliGemma's native <loc> detection head, LoRA fine-tuned on "
+                    "VRSBench referring expressions. Adapting this rather than "
+                    "fine-tuning a separate detector reuses the existing training "
+                    "pipeline and fits a free-tier T4."
+                ),
+            ),
+            "fusion_vlm": ToolDescriptor(
+                key="fusion_vlm",
+                display_name="Optical-SAR joint interpretation (PaliGemma + BigEarthNet-MM LoRA)",
+                model_id=f"{BASE_VLM_ID} + LoRA:{FUSION_ADAPTER}",
+                kind="vlm",
+                remote_sensing_adapted=True,
+                notes=(
+                    "LoRA fine-tuned on BigEarthNet-MM: real co-registered "
+                    "Sentinel-1 SAR and Sentinel-2 optical. This is the only "
+                    "component that has been trained on genuine radar imagery."
                 ),
             ),
             "change_vqa": ToolDescriptor(
@@ -283,14 +314,19 @@ class ModelRegistry:
             model = PeftModel.from_pretrained(base, VQA_ADAPTER, adapter_name="vqa")
             self.loaded_adapters = ["vqa"]
 
-            try:
-                model.load_adapter(CHANGE_ADAPTER, adapter_name="change")
-                self.loaded_adapters.append("change")
-            except Exception as exc:
-                print(
-                    f"  change adapter unavailable ({exc}); change VQA will fall "
-                    f"back to the vqa adapter and say so in the trace."
-                )
+            # Optional task adapters. A missing one is not fatal: the tool falls
+            # back to the VQA adapter and records the substitution in the trace,
+            # rather than failing or silently pretending it used the right one.
+            for path, name in (
+                (CHANGE_ADAPTER, "change"),
+                (FUSION_ADAPTER, "fusion"),
+                (GROUNDING_ADAPTER, "ground"),
+            ):
+                try:
+                    model.load_adapter(path, adapter_name=name)
+                    self.loaded_adapters.append(name)
+                except Exception as exc:
+                    print(f"  '{name}' adapter unavailable ({type(exc).__name__}); falling back to 'vqa'")
 
             model.eval()
             self.vlm_model = model
@@ -582,10 +618,167 @@ class ModelRegistry:
         params: Optional[Dict[str, Any]] = None,
     ) -> ToolResult:
         """
-        Text-guided region grounding.
+        Dispatch grounding to the remote-sensing-adapted VLM when its adapter is
+        loaded, otherwise to the stock detector.
+
+        `backend` may be "auto" (default), "vlm" or "detector". Whichever runs
+        is named in the trace, so a fallback is never mistaken for the adapted
+        path - which matters, because the problem statement requires domain
+        adaptation and stock GroundingDINO does not provide it.
+        """
+        params = params or {}
+        backend = str(params.get("backend", "auto")).lower()
+
+        if backend == "vlm" or (
+            backend == "auto"
+            and (self.vlm_model is not None or os.path.isdir(GROUNDING_ADAPTER))
+            and self._grounding_adapter_available()
+        ):
+            return self.run_grounding_vlm(image_path, queries, params)
+        return self.run_grounding_detector(image_path, queries, params)
+
+    def _grounding_adapter_available(self) -> bool:
+        if self.vlm_model is None:
+            return os.path.isdir(GROUNDING_ADAPTER)
+        return "ground" in self.loaded_adapters
+
+    def run_grounding_vlm(
+        self,
+        image_path: str,
+        queries: Any,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> ToolResult:
+        """
+        Region grounding via PaliGemma's native `detect` task.
+
+        The model emits <locNNNN> tokens over the letterboxed square canvas it
+        was shown, so boxes are mapped back through `box_from_canvas` into the
+        source image's own pixel space before they leave this method. Skipping
+        that inverse transform would place every box in the wrong spot by the
+        letterbox offset.
+        """
+        started = time.time()
+        params = params or {}
+        max_new_tokens = int(params.get("max_new_tokens", 64))
+        modality = str(params.get("modality", "auto"))
+        max_area = float(params.get("max_box_area_fraction", 0.92))
+
+        if not self._ensure_vlm_loaded():
+            return self._error("grounding_vlm", f"VLM unavailable. {self.vlm_load_error}", started)
+
+        try:
+            raw, report = self._load(image_path, modality)
+        except RasterReadError as exc:
+            return self._error("grounding_vlm", f"Could not read image: {exc}", started)
+
+        phrases: List[str] = (
+            list(queries) if isinstance(queries, (list, tuple)) else [str(queries)]
+        )
+        phrases = [str(p).strip().rstrip(".") for p in phrases if str(p).strip()]
+        if not phrases:
+            return self._error("grounding_vlm", "No search phrase was supplied.", started)
+
+        size = self.image_size
+        canvas = make_single_image(raw, size=size)
+        prompt = build_detect_prompt(phrases)
+
+        adapter = "ground" if "ground" in self.loaded_adapters else "vqa"
+        warnings: List[str] = []
+        if adapter != "ground":
+            warnings.append(
+                "The remote-sensing grounding adapter is not loaded; the VQA "
+                "adapter was used, which was not trained on the detection task."
+            )
+
+        answer_text, confidence = self._generate(prompt, canvas, adapter, max_new_tokens, 1)
+
+        img_area = float(raw.size[0] * raw.size[1])
+        detections: List[Dict[str, Any]] = []
+        for canvas_box, label in decode_loc_tokens(answer_text, canvas_size=size):
+            box = box_from_canvas(canvas_box, raw.size, size)
+            area = max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+            frac = area / img_area if img_area else 1.0
+            if frac <= 0.0:
+                continue
+            if frac > max_area:
+                warnings.append(
+                    f"Rejected a box covering {frac:.0%} of the frame (limit "
+                    f"{max_area:.0%}); a whole-image box is not a localisation."
+                )
+                continue
+            detections.append(
+                {
+                    "box": [round(c, 2) for c in box],
+                    "score": round(confidence, 4),
+                    "label": label or phrases[0],
+                    "phrase": label or phrases[0],
+                    "area_fraction": round(frac, 4),
+                }
+            )
+
+        applied = {
+            "backend": "vlm",
+            "adapter": adapter,
+            "max_new_tokens": max_new_tokens,
+            "max_box_area_fraction": max_area,
+            "search_phrases": phrases,
+            "input_resolution": size,
+            "prompt": prompt,
+            "raw_output": answer_text,
+            "coordinate_mapping": "loc tokens -> canvas px -> source image px",
+            "image_size": list(raw.size),
+        }
+
+        if not detections:
+            return ToolResult(
+                answer=f"No region matching {', '.join(phrases)} was localised.",
+                confidence=0.0,
+                confidence_type="sequence_likelihood",
+                tool=self.tool_descriptors()["grounding_vlm"],
+                applied_parameters=applied,
+                preprocessing={"image": report},
+                evidence={"detections": [], "detection_count": 0},
+                images={"input": raw},
+                latency_ms=(time.time() - started) * 1000.0,
+                warnings=warnings,
+            )
+
+        best = detections[0]
+        plural = "s" if len(detections) > 1 else ""
+        answer = (
+            f"Localised {len(detections)} region{plural} matching '{best['label']}'. "
+            f"Primary detection at [{best['box'][0]:.0f}, {best['box'][1]:.0f}, "
+            f"{best['box'][2]:.0f}, {best['box'][3]:.0f}]."
+        )
+
+        return ToolResult(
+            answer=answer,
+            confidence=confidence,
+            confidence_type="sequence_likelihood",
+            tool=self.tool_descriptors()["grounding_vlm"],
+            applied_parameters=applied,
+            preprocessing={"image": report},
+            evidence={
+                "detections": detections,
+                "detection_count": len(detections),
+                "best": best,
+            },
+            images={"input": raw},
+            latency_ms=(time.time() - started) * 1000.0,
+            warnings=warnings,
+        )
+
+    def run_grounding_detector(
+        self,
+        image_path: str,
+        queries: Any,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> ToolResult:
+        """
+        Text-guided region grounding via the stock zero-shot detector.
 
         Returns every box above threshold, not just the single best one - "the
-        water bodies" is legitimately plural. The oversized-box filter is now a
+        water bodies" is legitimately plural. The oversized-box filter is a
         declared parameter (`max_box_area_fraction`) instead of the previous
         hidden hardcoded whitelist of "scene-wide terms".
         """
@@ -663,6 +856,7 @@ class ModelRegistry:
         detections = detections[:top_k]
 
         applied = {
+            "backend": "detector",
             "box_threshold": box_threshold,
             "text_threshold": text_threshold,
             "max_box_area_fraction": max_area,
@@ -899,12 +1093,23 @@ class ModelRegistry:
             return self._error("optical_sar_vlm", f"Could not read image pair: {exc}", started)
 
         composite = make_pair_composite(opt, sar, size=self.image_size, layout="horizontal")
-        answer, confidence = self._generate(prompt, composite, "vqa", max_new_tokens, num_beams)
+
+        warnings: List[str] = []
+        adapter = "fusion" if "fusion" in self.loaded_adapters else "vqa"
+        if adapter != "fusion":
+            warnings.append(
+                "The BigEarthNet-MM fusion adapter is not loaded; the VQA adapter "
+                "was used instead. That adapter was trained only on optical "
+                "imagery and has not seen SAR, so treat radar-derived claims in "
+                "this answer with caution."
+            )
+
+        answer, confidence = self._generate(prompt, composite, adapter, max_new_tokens, num_beams)
 
         applied = {
             "max_new_tokens": max_new_tokens,
             "num_beams": num_beams,
-            "adapter": "vqa",
+            "adapter": adapter,
             "composite_layout": "horizontal (optical left, SAR right)",
             "input_resolution": self.image_size,
             "sar_preprocessing": "decibel conversion + Lee speckle filter + percentile stretch",
@@ -927,11 +1132,14 @@ class ModelRegistry:
             answer=answer,
             confidence=confidence,
             confidence_type="sequence_likelihood",
-            tool=self.tool_descriptors()["optical_sar_vlm"],
+            tool=self.tool_descriptors()[
+                "fusion_vlm" if adapter == "fusion" else "optical_sar_vlm"
+            ],
             applied_parameters=applied,
             preprocessing=preprocessing,
             images={"composite": composite, "optical": opt, "sar": sar},
             latency_ms=(time.time() - started) * 1000.0,
+            warnings=warnings,
         )
 
     def run_sar_evidence(
