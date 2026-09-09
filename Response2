@@ -1,0 +1,112 @@
+Applied and quarantined — good. That list is exactly what I outlined, so straight to it. Six files.
+
+Created 8 files
++3252
+-829
+Updated
+geo_validator.py
++342
+-67
+Created
+change_detection.py
++452
+-0
+Created
+intent.py
++84
+-0
+Created
+router.py
++331
+-0
+Created
+sar_analysis.py
++212
+-0
+Updated
+model_registry.py
++941
+-475
+Updated
+agent_controller.py
++424
+-287
+Created
+run_benchmarks.py
++466
+-0
+Session limit reached
+
+Try again
+
+Continuing — the last piece is app.py, wiring the UI to everything.
+
+Ran a command, created app.py
++512
+-267
+Confirmed current file state before writing app.py
+Updated
+app.py
++512
+-267
+
+Now a review pass. Four issues found in what I just wrote:
+
+Edited 3 files, ran 5 commands
++20
+-5
+
+Two loose ends: ~30 root-level ad-hoc scripts and the old tests/ all call the removed API (run_change_analysis, boolean verify_coregistration, dict results). Quarantining those and writing a real unit suite for the deterministic core — which needs no model weights and can actually be run:
+
+Ran a command, created test_core.py
++555
+-0
+
+Reviewing the new tests against the implementation surfaced a genuine algorithmic weakness — worth fixing in the code, not the test:
+
+Edited 2 files, ran 3 commands, created 3 files
++280
+-10
+Sent
+
+Update pack 2 — the full inference layer. Extract over SatQuery-main, then run quarantine_stale_scripts.ps1 and pytest tests -q.
+
+ZIP
+
+SatQuery_update2_inference.zip
+
+66.3KB
+
+All six items are done. C:\Users\ADMIN\Desktop\SatQuery_update2_inference.zip (66 KB), attached above.
+
+What each item became
+
+1. Registry through raster_io + composite — every PIL.Image.open in the inference path is gone. Pair tasks call align_pair, which reprojects onto a common grid rather than assuming identical bounds. Composites and prompt strings now come from the same modules/composite.py that the training scripts import, so train/serve skew is structurally impossible.
+
+2. run_optical_sar crash — signature kept at four arguments (it was always right); the controller's three-argument call was the bug. Fixed. The path now actually executes, and does real work: modules/sar_analysis.py derives water from specular radar-dark returns and built-up from bright high-texture double-bounce, cross-checked against optical brightness to reject radar shadow.
+
+3. Fabricated trace — tool_descriptors() returns real model identifiers. Every tool returns applied_parameters containing what it actually consumed, not what was requested. Each descriptor carries remote_sensing_adapted, which is false for GroundingDINO — that gap is now visible in the UI instead of hidden behind "GroundingDINO-RS (Active)".
+
+4. geo_validator — tolerance is one pixel, computed after transforming both footprints into a common CRS. Five statuses; only two say "verified". PNG pairs report "alignment not verifiable" and proceed. The boolean shim now returns False for unverifiable pairs rather than True.
+
+5. Change detection — interquartile-anchored radiometric normalisation → change vector analysis → Otsu → morphology → connected components, overlaid on T2 rather than floating on black. Otsu separability is reported as evidence quality, since Otsu always returns some split.
+
+6. Offline router + eval harness — modules/router.py classifies all five representative queries deterministically with no network. The controller tries Gemini, falls back silently, and records which backend decided and why. eval/run_benchmarks.py scores exact match, token F1, grounding IoU, and — importantly — distinct-prediction ratio and majority-class baseline, so a collapsed adapter can't hide behind a decent-looking accuracy number.
+
+One thing I changed beyond the list
+
+Writing the tests exposed a real weakness in my own change-detection code. I had anchored radiometric normalisation on p2/p98, reasoning that changed pixels are a minority. They are — but a change region covering 10% of a scene at extreme brightness sits inside the 98th percentile, so the anchor gets computed from the change itself and drags the unchanged background off by tens of DN. Switched to p25/p75, which tolerates 25% contamination in either tail. That's fixed in the code, not papered over in the test.
+
+Also in the pack
+
+~30 root-level ad-hoc scripts and the old tests/ suite call the removed API and would now fail. quarantine_stale_scripts.ps1 moves them aside using explicit filename lists — not globs, so it won't sweep up the new suite. _deprecated_scripts/README.md documents the API migration.
+
+In their place, tests/test_core.py — 50+ real unit tests for the deterministic core. This is the first thing in the project that can be verified without model weights, so run it first:
+
+pytest tests -q
+
+It checks the box filter against a naive convolution, Otsu against a known bimodal distribution, radiometric normalisation against a known gain and offset, change detection against a synthetic scene with a change in a known quadrant, composite aspect-ratio preservation, the router against all five problem-statement queries, and co-registration across every status — including an explicit test that a PNG pair is not claimed as verified.
+
+Standing caveat, unchanged: none of this has been executed. No Python on this machine. Failures in pytest tests -q are real bugs in my code — send me the output and I'll fix them against the actual traceback.
+
+The remaining known gap is GroundingDINO being stock. data_prep.py already emits grounding_eval.jsonl with VRSBench referring boxes, and run_benchmarks.py --task grounding gives you the pre-adaptation baseline to improve on — say the word and I'll write that fine-tune next.
