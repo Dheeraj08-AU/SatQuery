@@ -63,3 +63,81 @@ Steps 1–4 are days. Step 5 is the real remaining chunk. Steps 6–9 are mostly
 What I need from you
 
 The eval block from training_report.json. If the VQA adapter is healthy, I'll write the BigEarthNet-MM prep script and the RSVQA loader next — those two are the whole of section B and they unblock everything else.
+
+
+
+
+ok with the given information u have , gimme all the remaining required files asap
+
+Understood — delivering everything without waiting. Priority order: the SAR gap first (highest risk), then RS-adapted grounding, then RSVQA, then reports and docs.
+
+Starting with the geometry/token helpers that grounding depends on:
+
+
+Edited composite.py, ran a command
++128
+-0
+Now the highest-priority file — BigEarthNet-MM, which closes the SAR gap, the cross-modal gap, and the "primary dataset" clause at once:
+
+Created
+prep_bigearthnet.py
++140
+-0
+I left a stray placeholder token and truncated that file. Rewriting it in full:
+
+
+Created 2 files
++1184
+-50
+Now wiring the new tasks into training. First, grounding annotations need a train split and coordinate-convention detection:
+
+
+Edited 2 files, ran a command
++291
+-28
+Now the inference side of RS-adapted grounding:
+
+
+Ran 10 commands, edited 3 files, created 3 files
++1018
+-12
+Sent
+Update pack 3 — BigEarthNet-MM (SAR), RSVQA, RS-adapted grounding, HTML reports, README. Extract over SatQuery-main, then pytest tests -q.
+
+
+zip
+SatQuery_update3_complete.zip
+
+79.9kB
+
+C:\Users\ADMIN\Desktop\SatQuery_update3_complete.zip (80 KB), attached. This closes every remaining code gap against the PS.
+
+What's in it
+training/prep_bigearthnet.py — the important one. Real co-registered Sentinel-1 SAR + Sentinel-2 optical, which is the only thing that fixes your biggest risk: the VQA adapter has never seen radar, and half the ISRO eval set is RISAT SAR. It renders SAR through the exact same dB → Lee filter → percentile stretch path raster_io uses at inference, so the adapter trains on the rendering it will actually be served. Questions are synthesised from CORINE labels, and — critically — each question template is balanced independently. Balancing only the global mix still lets "is there water?" run 90% yes while the overall distribution looks healthy; that's how per-question priors get learned.
+
+training/prep_rsvqa.py — RSVQA-LR/HR. A prescribed benchmark that had no code path at all. Balances per question type (presence questions are yes-skewed, comparison no-skewed; globally they cancel and hide both), and never rebalances the test split, since that's the graded benchmark.
+
+RS-adapted grounding. Instead of fine-tuning GroundingDINO — awkward on a free T4 — this fine-tunes PaliGemma's native detect task, which emits <loc0000>–<loc1023> tokens. Same script, same pipeline, and grounding stops being the one component that fails the domain-adaptation requirement. run_grounding dispatches to the adapted VLM when its adapter is loaded, stock DINO otherwise, and records which under applied_parameters.backend.
+
+modules/report.py — self-contained HTML report, images embedded as base64, opens offline, prints to PDF. Third download button in the app.
+
+README.md — architecture, a requirement-by-requirement mapping to the PS, design notes, and an explicit known-limitations section.
+
+Two subtleties worth knowing
+Letterbox transform. Grounding boxes are annotated in the source image's pixel space, but the model sees a letterboxed square canvas. box_to_canvas / box_from_canvas apply the transform both ways. Skipping it trains the model on boxes that don't sit on the objects and yields near-zero IoU with no visible error anywhere.
+
+Coordinate conventions. VRSBench boxes may be absolute pixels, per-mille, percent, or normalised. data_prep.py now detects which and records it in build_report.json; training and eval both apply the divisor. Check that field after building — a wrong guess produces near-zero IoU that reads as a broken model rather than a unit mismatch.
+
+Where the project stands
+Code-complete against the PS. What remains is execution, not writing:
+
+Verify the VQA adapter's eval block — collapsed must be false
+Finish the change adapter; train fusion and grounding (two more Colab runs)
+Push all four adapters to the Hub
+Run the benchmarks, record real numbers
+Test on one real Sentinel-2 GeoTIFF and one real SAR GeoTIFF
+Demo pack
+Unchanged caveat
+Nothing across the three packs has ever been executed — there's no Python on the machine I'm working from. pytest tests -q is now ~60 tests over the deterministic core and is the fastest way to surface real bugs. Run it first and send me the output; I'll fix against actual tracebacks rather than guessing.
+
+The two --inspect commands resolve the last unknowns — the exact BigEarthNet-MM column layout and RSVQA file naming. Both builders auto-detect and abort with a schema dump rather than silently guessing wrong, which is the failure mode that started all of this.
