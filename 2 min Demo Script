@@ -1,0 +1,57 @@
+SatQuery AI — 2-Minute Live Demo Script
+
+Spoken text ≈ 300 words (~150 wpm). Stage directions in brackets. Have all files pre-loaded in the sidebar before you start.
+
+[0:00 — 0:15] Open cold. App already running, single image loaded.
+
+"Judges — a district officer after a flood does not know what a GeoTIFF band is, or what model to run. She has one question: where is the water?
+
+SatQuery AI takes that question in plain English, over optical or radar, single image or a pair."
+
+[0:15 — 0:35] Beat 1 — Single-image VQA
+
+[Type: "What is the dominant land cover in this image?" → Analyse]
+
+"One PaliGemma-3B, QLoRA fine-tuned by us on RSVQA-LR — real Sentinel-2 imagery. Not an API call to a general-purpose model."
+
+[Open the Execution Summary panel]
+
+"And every answer carries this: the real model ID, the parameters actually used, and a confidence value labelled with what it means — this one is a decoder likelihood, which is fluency, not correctness. We do not merge different confidences into one flattering number."
+
+[0:35 — 1:00] Beat 2 — Honest audit trail
+
+[Switch to a grounding query: "Highlight the water body." → Analyse]
+
+"Here it localises the region. Now look at the badge — not RS-adapted. This grounding step falls back to a zero-shot detector that was never trained on overhead imagery, and the system says so, out loud, in its own audit trail.
+
+A system that hides its fallbacks is not auditable. Ours declares them."
+
+[1:00 — 1:25] Beat 3 — Bi-temporal change
+
+[Bi-Temporal mode, T1/T2 loaded. Type: "What changed, and where?" → Analyse]
+
+"Two tools run in sequence. First a deterministic pass — radiometric normalisation, change vector analysis, Otsu thresholding — which answers where, and gives us changed area and region coordinates. Then the vision-language model answers what.
+
+No hardcoded threshold. The decision boundary comes from the data."
+
+[1:25 — 1:50] Beat 4 — The differentiator
+
+[Cross-Modal mode, optical + SAR loaded → Analyse. Point at the blue/red overlay.]
+
+"This is the part I want you to look at. We do not hand two pictures to a model and hope.
+
+Water is a specular reflector — it is the darkest thing in a radar scene. Buildings double-bounce off the wall-ground corner — brightest, with high texture. We classify on that physics, then cross-check against optical to reject radar shadow.
+
+Blue is water. Red is built-up. Through cloud, day or night."
+
+[1:50 — 2:00] Close
+
+[Unplug the network / disable WiFi. Re-run any query.]
+
+"One last thing."
+
+[It answers.]
+
+"No internet. A deterministic offline router takes over and the trace records that it did. On demo day, and in a field deployment, there is no single point of failure.
+
+Adapted, auditable, and honest about its limits. Thank you."
