@@ -1,0 +1,114 @@
+SLIDE 1 — TITLE PAGE
+Problem Statement ID   – 26167
+Problem Statement Title – SatQuery AI: An Interactive Vision-Language Assistant
+                          for Multimodal Remote Sensing Image Analysis
+                          through Text Queries
+Theme                  – Space Technology
+PS Category            – Software
+Team ID                – <your team ID>
+Team Name              – <as registered on portal>
+SLIDE 2 — IDEA TITLE
+
+Proposed Solution
+
+Agentic vision-language assistant: upload 1 image, a bi-temporal pair, or an optical+SAR pair — ask in plain English, get an evidence-grounded answer
+PaliGemma-3B QLoRA-fine-tuned on RSVQA-LR (772 Sentinel-2 scenes, balanced subset) — a domain-adapted VLM, not a generic API call
+Controller classifies intent → validates geospatial inputs → selects & sequences specialist tools → merges text + spatial evidence
+5 tasks: single-image VQA, scene captioning, region grounding, bi-temporal change analysis, optical–SAR fusion
+
+How it addresses the problem
+
+Non-experts need no GIS skills, no model selection, no task parameters — one text box
+Native GeoTIFF / multispectral / SAR ingestion: 12-band Sentinel-2, single-band float32 radar, dB conversion, Lee speckle filtering
+Paired tasks run a deterministic spatial tool + the VLM, then merge: the algorithm answers where, the VLM answers what
+Every answer ships with visual overlay, typed confidence, audit trail, GeoJSON + HTML report
+
+Innovation and uniqueness
+
+Physics-based SAR extraction — specular return ⇒ water, double-bounce + high texture ⇒ built-up; optical cross-check rejects radar shadow. Not a generic model shown a grey picture
+Anti-hallucination audit trail — every tool reports its real model ID and an explicit remote_sensing_adapted: true/false. Fallbacks are declared, never disguised
+Zero-network operation — deterministic offline intent router; no API key required, no single point of failure on demo day
+Anti-degeneracy gates — dataset builders and the trainer both abort if the model learns the answer prior instead of the imagery
+SLIDE 3 — TECHNICAL APPROACH
+
+Technologies to be used
+
+VLM: google/paligemma-3b-pt-224 (SigLIP-400M vision + Gemma-2B), native <loc0000>–<loc1023> grounding tokens
+Adaptation: QLoRA — 4-bit NF4, FP16 compute, rank 16 / alpha 32, gradient checkpointing; LoRA on LM attention + MLP, vision-tower attention
+Datasets: RSVQA-LR (VQA) · VRSBench (captioning/grounding) · CDVQA (change) · BigEarthNet-MM (optical–SAR)
+Geospatial: rasterio, GDAL — CRS transforms, reprojection, percentile stretch, Lee filter, Otsu, CVA
+Stack: PyTorch · Transformers · PEFT · BitsAndBytes · NumPy · Streamlit · pytest
+Hardware: RTX 5060 Ti 16 GB (training) · runs on CPU for inference
+
+Methodology and process for implementation
+
+Suggested diagram — horizontal flow, left to right:
+
+Query + Image(s)
+   ↓
+INTENT ROUTER          Gemini 2.5 Flash Lite  ⇄  Offline rule-based (fallback)
+   ↓
+INPUT VALIDATOR        format · bands · CRS · co-registration (7 outcomes)
+   ↓
+AGENTIC CONTROLLER     select → sequence → execute → merge → confidence → trace
+   ↓
+   ├── VQA / Caption ──── PaliGemma-3B + LoRA (RSVQA)
+   ├── Grounding ──────── GroundingDINO-tiny  [zero-shot, flagged not RS-adapted]
+   ├── Change ─────────── CVA + Otsu + morphology  →  PaliGemma change adapter
+   └── Optical–SAR ────── backscatter physics  →  PaliGemma (VQA adapter fallback)
+   ↓
+STREAMLIT UI           overlays · audit trail · GeoJSON · HTML report
+Change pipeline: IQR radiometric normalisation → Change Vector Analysis → Otsu (data-driven, not hardcoded) → morphological open/close → connected components
+Train/serve consistency: training and inference import the same compositing module — the model is never shown a rendering it did not train on
+SLIDE 4 — FEASIBILITY AND VIABILITY
+
+Analysis of the feasibility
+
+Working end-to-end prototype today: Streamlit app, 5 tools, full agentic controller
+3B model + QLoRA trains on one consumer GPU; inference runs on CPU — deployable on ISRO/SAC hardware without a cluster
+Unit suite (~60 tests) covers the deterministic core — no GPU, no network, no weights required
+All datasets are open and are the exact benchmarks named in the problem statement
+
+Potential challenges and risks
+
+SAR is out-of-distribution for an optically-trained VLM — the largest technical risk
+Grounding currently falls back to zero-shot GroundingDINO — not remote-sensing adapted
+Optical–SAR VLM path falls back to the VQA adapter; radar-derived claims flagged as lower confidence
+Uncalibrated DN input prevents absolute σ⁰ thresholds
+CPU latency for a 3B VLM
+
+Strategies for overcoming these challenges
+
+BigEarthNet-MM builder ready — real co-registered Sentinel-1 + Sentinel-2 for a dedicated fusion adapter; SAR rendered through the identical dB→Lee→stretch path used at inference
+Grounding adapter trains PaliGemma's native detect head on VRSBench referring boxes — same pipeline, no separate detector
+Fallbacks are never hidden: the trace records which backend ran, so a judge can verify every claim
+SAR classified by scene-relative percentiles — robust to calibration state, and labelled as such
+GPU inference for live demos; result cache surfaced explicitly with a cache_hit flag
+SLIDE 5 — IMPACT AND BENEFITS
+
+Potential impact on the target audience
+
+Disaster response: flood extent from SAR through cloud cover, day or night, in minutes
+Non-expert analysts: district officers, agriculture and forest departments query imagery without GIS training
+ISRO/SAC analysts: one interface across Cartosat-2S optical and RISAT SAR instead of separate task-specific tools
+Auditability: every output carries model IDs, applied parameters and confidence type — usable as an evidence record, not just a demo
+
+Benefits of the solution
+
+Social: faster flood/landslide assessment; democratised access to national satellite assets
+Economic: open-weight 3B model, consumer-GPU training, CPU inference — no per-query API cost, no vendor lock-in, fully deployable inside ISRO's network
+Environmental: deforestation, water-body shrinkage, urban-sprawl monitoring from bi-temporal pairs with quantified changed-area statistics
+Strategic: sovereign AI capability — model weights, code and data pipeline are entirely in-house and reproducible
+SLIDE 6 — RESEARCH AND REFERENCES
+PaliGemma — Beyer et al., PaliGemma: A Versatile 3B VLM for Transfer, arXiv:2407.07726
+SigLIP — Zhai et al., Sigmoid Loss for Language–Image Pre-Training, ICCV 2023, arXiv:2303.15343
+QLoRA — Dettmers et al., NeurIPS 2023, arXiv:2305.14314
+LoRA — Hu et al., ICLR 2022, arXiv:2106.09685
+RSVQA — Lobry et al., RSVQA: Visual Question Answering for Remote Sensing Data, IEEE TGRS 2020, arXiv:2003.07333
+VRSBench — Li et al., NeurIPS 2024 Datasets & Benchmarks, arXiv:2406.12384
+CDVQA — Yuan et al., Change Detection Meets Visual Question Answering, IEEE TGRS 2022, arXiv:2112.06343
+BigEarthNet-MM — Sumbul et al., IEEE Geoscience & Remote Sensing Magazine 2021, arXiv:2105.07921
+Grounding DINO — Liu et al., ECCV 2024, arXiv:2303.05499
+Otsu thresholding — Otsu, IEEE Trans. SMC, 1979
+Lee speckle filter — Lee, IEEE Trans. PAMI, 1980
+Change Vector Analysis — Bovolo & Bruzzone, IEEE TGRS, 2007
